@@ -31,21 +31,72 @@
  */
 size_t btok(size_t bytes)
 {
-    //DO NOT use math.pow
+    //Validate bytes...probably not needed
+    if (!bytes){
+        return DEFAULT_K;
+    }
+
+    //initialize kvalue to smallest K value
+    size_t kVal = SMALLEST_K;
+
+    //initialize block size to smallest K value
+    size_t size = UNINT_C(1) << kVal;
+
+    //Find the appropriate k value where size~2^k is >= bytes
+    while (size < bytes) {
+        kVal++;
+
+        if (kVal >= MAX_K) { //Max size reached, downsize
+            return MAX_K - 1;
+        }
+
+        //double block size by bit shifting kVal
+        size = UINT64_C(1) << kVal;
+    }
+    return kVal;
 }
 
 struct avail *buddy_calc(struct buddy_pool *pool, struct avail *buddy)
 {
+    //Validate Values
+    if (!pool || !buddy){
+        errno = ENOMEM;
+        return NULL;
+    }
 
+    //calculate the offset in memory for the actual address
+    uintptr_t baseAddress = pool->base; //store for safety
+    uintptr_t currentAddress = (uintptr_t)buddy; //store for safety
+    uintptr_t offset = currentAddress - baseAddress; //offset value
+    
+    //Calculate the Block size by initializing address and shifting by kVal
+    uintptr_t blockSize = UNINT64_C(1) << buddy->kval;
+
+    //Calculate the buddy address by XOR the offset value with the blocksize, and adding the offset
+    //offset is needed as memory addresses do not start at 0
+    uintptr_t buddyAddress = (offset ^ blockSize) + offset;
+
+    return (struct avail*)buddyAddress;
 }
 
 void *buddy_malloc(struct buddy_pool *pool, size_t size)
 {
+    //Validate Values
+    if (size == 0 || !pool){
+        errno = ENOMEM;
+        return NULL;
+    }
+
+    //calculate the size of the header
+    size_t headerSize = sizeof(struct avail);
 
     //get the kval for the requested size with enough room for the tag and kval fields
+    size_t calculatedKVal = btok(size + headerSize);
 
     //R1 Find a block
-
+    size_t requiredKVal = calculatedKVal;
+    size_t maxKVal = pool->kval_m
+    while (requiredKVal <= maxKVal)
     //There was not enough memory to satisfy the request thus we need to set error and return NULL
 
     //R2 Remove from list;
@@ -61,19 +112,20 @@ void buddy_free(struct buddy_pool *pool, void *ptr)
 
 }
 
-/**
- * @brief This is a simple version of realloc.
- *
- * @param poolThe memory pool
- * @param ptr  The user memory
- * @param size the new size requested
- * @return void* pointer to the new user memory
- */
-void *buddy_realloc(struct buddy_pool *pool, void *ptr, size_t size)
-{
-    //Required for Grad Students
-    //Optional for Undergrad Students
-}
+//IF time allows....
+// /**
+//  * @brief This is a simple version of realloc.
+//  *
+//  * @param poolThe memory pool
+//  * @param ptr  The user memory
+//  * @param size the new size requested
+//  * @return void* pointer to the new user memory
+//  */
+// void *buddy_realloc(struct buddy_pool *pool, void *ptr, size_t size)
+// {
+//     //Required for Grad Students
+//     //Optional for Undergrad Students
+// }
 
 void buddy_init(struct buddy_pool *pool, size_t size)
 {
