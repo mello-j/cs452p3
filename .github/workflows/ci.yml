@@ -13,8 +13,6 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - name: install dependencies
-      run: sudo apt-get install libreadline-dev-y
     - name: make
       run: make
     - name: make check
