@@ -38,6 +38,12 @@ extern "C"
 #define BLOCK_RESERVED 0  /*Block has been handed to user*/
 #define BLOCK_UNUSED   3  /*Block is not used at all*/
 
+
+  /**
+   * The size of the header for the block
+   */
+
+  #define HEADER_SIZE (sizeof(struct avail)) 
   /**
    * Struct to represent the table of all available blocks do not reorder members
    * of this struct because internal calculations depend on the ordering.

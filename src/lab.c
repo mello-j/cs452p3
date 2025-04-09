@@ -31,29 +31,20 @@
  */
 size_t btok(size_t bytes)
 {
-    //Validate bytes...probably not needed
-    if (!bytes){
-        return DEFAULT_K;
-    }
-
     //initialize kvalue to smallest K value
-    size_t kVal = SMALLEST_K;
+    size_t k_val = SMALLEST_K;
 
     //initialize block size to smallest K value
-    size_t size = UNINT_C(1) << kVal;
+    size_t size = UINT64_C(1) << k_val;
 
     //Find the appropriate k value where size~2^k is >= bytes
-    while (size < bytes) {
-        kVal++;
-
-        if (kVal >= MAX_K) { //Max size reached, downsize
-            return MAX_K - 1;
-        }
+    while (size < bytes && k_val < MAX_K) {
+        k_val++;
 
         //double block size by bit shifting kVal
-        size = UINT64_C(1) << kVal;
+        size = UINT64_C(1) << k_val;
     }
-    return kVal;
+    return k_val;
 }
 
 struct avail *buddy_calc(struct buddy_pool *pool, struct avail *buddy)
@@ -65,52 +56,136 @@ struct avail *buddy_calc(struct buddy_pool *pool, struct avail *buddy)
     }
 
     //calculate the offset in memory for the actual address
-    uintptr_t baseAddress = pool->base; //store for safety
-    uintptr_t currentAddress = (uintptr_t)buddy; //store for safety
-    uintptr_t offset = currentAddress - baseAddress; //offset value
+    uintptr_t base_address = (uintptr_t)pool->base; //store for safety
+    uintptr_t current_address = (uintptr_t)buddy; //store for safety
+    uintptr_t address_offset = current_address - base_address; //offset value
     
     //Calculate the Block size by initializing address and shifting by kVal
-    uintptr_t blockSize = UNINT64_C(1) << buddy->kval;
+    size_t block_size = UINT64_C(1) << buddy->kval;
 
-    //Calculate the buddy address by XOR the offset value with the blocksize, and adding the offset
+    //Calculate the buddy address by XOR the offset value with the blocksize, and adding the base
     //offset is needed as memory addresses do not start at 0
-    uintptr_t buddyAddress = (offset ^ blockSize) + offset;
+    uintptr_t buddy_address = (address_offset ^ block_size) + base_address;
 
-    return (struct avail*)buddyAddress;
+    return (struct avail*)buddy_address;
 }
 
 void *buddy_malloc(struct buddy_pool *pool, size_t size)
 {
     //Validate Values
-    if (size == 0 || !pool){
+    if (size == 0 || !pool || (size > pool->numbytes)){
         errno = ENOMEM;
         return NULL;
     }
 
-    //calculate the size of the header
-    size_t headerSize = sizeof(struct avail);
-
     //get the kval for the requested size with enough room for the tag and kval fields
-    size_t calculatedKVal = btok(size + headerSize);
+    size_t required_kval = btok(size + HEADER_SIZE);
 
-    //R1 Find a block
-    size_t requiredKVal = calculatedKVal;
-    size_t maxKVal = pool->kval_m
-    while (requiredKVal <= maxKVal)
-    //There was not enough memory to satisfy the request thus we need to set error and return NULL
+    //R1 Find a block where k <= j <= m, if no available block, fail to allocate and return
+    size_t target_kval = required_kval;
+    size_t max_kval = pool->kval_m;
+
+
+    while (target_kval <= max_kval){
+        //check for available block
+        if(pool->avail[target_kval].next != &pool->avail[target_kval]){
+            //a block found so exit
+            break;
+        }
+        target_kval++;
+    }
+    //There was not enough memory to satisfy the request we set error and return NULL
+    if (target_kval > max_kval){
+        errno = ENOMEM;
+        return NULL;
+    }
 
     //R2 Remove from list;
+    struct avail *current_block = pool->avail[target_kval].next; //grab block
+    current_block->prev->next = current_block->next; //update next pointer
+    current_block->next->prev = current_block->prev; //update next prev pointer
 
     //R3 Split required?
+    //If the currentKValue is greater than the current kVal, we can split it for efficiency
+    while (target_kval > required_kval){
+        //decrease until reach correct kVal
+        target_kval--;
 
-    //R4 Split the block
+        //calculate buddy address
+         //R4 Split the block
+        size_t buddy_size = (UINT64_C(1) << target_kval);
+        struct avail *buddy = (struct avail *)((uint8_t *)current_block + buddy_size);
+        
+        buddy->kval = target_kval;
+        buddy->tag = BLOCK_AVAIL;
 
+        //Make the buddy available
+        buddy->next = pool->avail[target_kval].next;
+        buddy->prev = &pool->avail[target_kval];
+        pool->avail[target_kval].next->prev = buddy;
+        pool->avail[target_kval].next = buddy;
+        
+        //update current block
+        current_block->kval = target_kval;
+    }
+    current_block->tag = BLOCK_RESERVED;
+   
+    return (void *)((uint8_t *)current_block + HEADER_SIZE);
 }
 
 void buddy_free(struct buddy_pool *pool, void *ptr)
 {
+    //Validate Values
+    if ( !pool || !ptr){
+        return;
+    }
 
-}
+     // Check if the pointer is within the managed memory range (LLM Suggested)
+     if ((uint8_t*)ptr < (uint8_t*)pool->base || (uint8_t*)ptr >= (uint8_t*)pool->base + pool->numbytes) {
+        return; // Pointer is outside our pool
+    }
+     // Find the header by subtracting the header size from the ptr
+     struct avail *block = (struct avail *)((uint8_t *)ptr - HEADER_SIZE);
+    
+     // Validate that this is a reserved block
+     if (block->tag != BLOCK_RESERVED) {
+         return; // ignore unreserved blocs
+     }
+     
+     // Mark the block as available
+     block->tag = BLOCK_AVAIL;
+     
+     // Try to coalesce with buddy
+     size_t k_val = block->kval;
+     while (k_val < pool->kval_m) {
+         // Calculate the buddy
+         struct avail *buddy = buddy_calc(pool, block);
+         
+         // check buddy is available with same kval
+         if (buddy->tag != BLOCK_AVAIL || buddy->kval != k_val) {
+             break; // Can't coalesce
+         }
+         
+         // remove buddy
+         buddy->prev->next = buddy->next;
+         buddy->next->prev = buddy->prev;
+         
+         // Determine which block is lower in memory
+         if (buddy < block) {
+             // merger lower memory block
+             block = buddy;
+         }
+         
+         k_val++;
+         block->kval = k_val;
+     }
+     
+     // Add the block
+     block->next = pool->avail[k_val].next;
+     block->prev = &pool->avail[k_val];
+     pool->avail[k_val].next->prev = block;
+     pool->avail[k_val].next = block;
+ }
 
 //IF time allows....
 // /**
